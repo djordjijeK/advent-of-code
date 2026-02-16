@@ -1,0 +1,6 @@
+# Ignore all Advent of Code input files
+**/src/*.txt
+
+# Ignore all Rust build output directories
+**/target/
+
