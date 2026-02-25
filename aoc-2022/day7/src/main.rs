@@ -1,4 +1,5 @@
-use std::path::{Path, PathBuf};
+use core::fmt;
+use std::{cell::RefCell, collections::{BTreeMap}, path::{Path, PathBuf}, rc::Rc};
 use nom::{IResult, Parser, branch::alt, bytes::complete::{tag, take_while1}, combinator::{all_consuming, map}, sequence::{preceded, separated_pair}};
 
 
@@ -28,6 +29,38 @@ enum Entry {
 enum Line<'l> {
     Command(Command<'l>),
     Entry(Entry)
+}
+
+
+#[derive(Default)]
+struct TreeNode {
+    parent: Option<Rc<RefCell<TreeNode>>>,
+    children: BTreeMap<PathBuf, Rc<RefCell<TreeNode>>>,
+    size: usize
+}
+
+
+impl fmt::Debug for TreeNode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Node")
+            .field("size", &self.size)
+            .field("children", &self.children)
+            .finish()
+    }
+}
+
+
+impl TreeNode {
+    fn is_dir(&self) -> bool {
+        self.size == 0 && !self.children.is_empty()
+    }
+
+
+    fn total_size(&self) -> u64 {
+        self.children.values()
+            .map(|child| child.borrow().total_size())
+            .sum::<u64>() + self.size as u64
+    }
 }
 
 
@@ -86,15 +119,94 @@ fn parse_line<'l>(input: &'l str) -> IResult<&'l str, Line<'l>> {
 }
 
 
+fn solve_part_1(root: Rc<RefCell<TreeNode>>) -> u64 {
+    all_dirs(root)
+        .map(|d| d.borrow().total_size())
+        .filter(|&s| s <= 100_000)
+        .sum::<u64>()
+} 
+
+
+fn solve_part_2(root: Rc<RefCell<TreeNode>>) -> u64 {
+    let total_space = 70000000_u64;
+    let used_space = root.borrow().total_size();
+    let free_space = total_space.checked_sub(used_space).unwrap();
+    let needed_free_space = 30000000_u64;
+    let minimum_space_to_free = needed_free_space.checked_sub(free_space).unwrap();
+
+    all_dirs(root).map(|d| d.borrow().total_size())
+        .filter(|&s| s >= minimum_space_to_free)
+        .min()
+        .unwrap()
+}
+
+
 fn main() {
     let input = include_str!("input.txt");
     let lines = input.lines()
-        .map(|line| all_consuming(parse_line).parse(line));
+        .map(|line| all_consuming(parse_line).parse(line).unwrap().1);
+
+    let root = Rc::new(RefCell::new(TreeNode::default()));
+    let mut node = root.clone();
 
     for line in lines {
-        println!("{:?}", line);
+        match line {
+            Line::Command(cmd) => match cmd {
+                Command::List(_) => {
+                    // we are parsing file line by line, we do not have to do anything here
+                }
+                Command::ChangeDirectory(Cd(path)) => match path.to_str().unwrap() {
+                    "/" => {
+                        // ignore, we're already there
+                    }
+                    ".." => {
+                        let parent = node.borrow().parent.clone().unwrap();
+                        node = parent;
+                    }
+                    _ => {
+                        let child = node.borrow_mut().children.entry(path.to_path_buf()).or_default().clone();
+                        node = child;
+                    }
+                },
+            },
+            Line::Entry(entry) => match entry {
+                Entry::Directory(dir) => {
+                    let entry = node.borrow_mut().children.entry(dir).or_default().clone();
+                    entry.borrow_mut().parent = Some(node.clone());
+                }
+                Entry::File(size, file) => {
+                    let entry = node.borrow_mut().children.entry(file).or_default().clone();
+                    entry.borrow_mut().size = size as usize;
+                    entry.borrow_mut().parent = Some(node.clone());
+                }
+            },
+        }
     }
+
+    let part_1 = solve_part_1(root.clone());
+    let part_2 = solve_part_2(root.clone());
+
+    println!("Part 1 result: {part_1}");
+    println!("Part 2 result: {part_2}");
 }
+
+
+fn all_dirs(n: Rc<RefCell<TreeNode>>) -> Box<dyn Iterator<Item = Rc<RefCell<TreeNode>>>> {
+    let children = n.borrow().children.values().cloned().collect::<Vec<_>>();
+
+    Box::new(std::iter::once(n)
+        .chain(children.into_iter()
+            .filter_map(|c| {
+                if c.borrow().is_dir() {
+                    Some(all_dirs(c))
+                } else {
+                    None
+                }
+            })
+            .flatten()
+    ))
+}
+
 
 
 #[cfg(test)]
